@@ -1,0 +1,15 @@
+# Build output
+bin/
+obj/
+*.exe
+*.dll
+*.pdb
+
+# Local settings and logs
+*.log
+config.json
+
+# Visual Studio / IDE
+.vs/
+*.user
+*.suo
