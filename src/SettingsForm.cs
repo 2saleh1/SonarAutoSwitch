@@ -467,6 +467,19 @@ namespace SonarAutoSwitch
             this.Close();
         }
 
+        public bool AllowRealExit { get; set; }
+
+        protected override void OnFormClosing(FormClosingEventArgs e)
+        {
+            if (!AllowRealExit && e.CloseReason == CloseReason.UserClosing)
+            {
+                e.Cancel = true;
+                this.Hide();
+                return;
+            }
+            base.OnFormClosing(e);
+        }
+
         private void ConfigureStartupShortcut(bool enable)
         {
             try
@@ -481,7 +494,7 @@ namespace SonarAutoSwitch
                 else
                 {
                     string exePath = Application.ExecutablePath;
-                    CreateShortcut(lnkPath, exePath);
+                    CreateShortcut(lnkPath, exePath, "--silent");
                 }
             }
             catch (Exception ex)
@@ -490,7 +503,7 @@ namespace SonarAutoSwitch
             }
         }
 
-        public static void CreateShortcut(string shortcutPath, string targetPath)
+        public static void CreateShortcut(string shortcutPath, string targetPath, string arguments = "")
         {
             try
             {
@@ -499,8 +512,12 @@ namespace SonarAutoSwitch
                 dynamic shell = Activator.CreateInstance(shellType);
                 dynamic shortcut = shell.CreateShortcut(shortcutPath);
                 shortcut.TargetPath = targetPath;
+                if (!string.IsNullOrEmpty(arguments))
+                {
+                    shortcut.Arguments = arguments;
+                }
                 shortcut.WorkingDirectory = Path.GetDirectoryName(targetPath);
-                shortcut.Description = "Sonar Auto Switcher Service";
+                shortcut.Description = "Sonar Auto Switcher";
                 shortcut.Save();
             }
             catch { }

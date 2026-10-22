@@ -19,8 +19,7 @@ namespace SonarAutoSwitch
         private static volatile bool _isRunning = true;
         private static string _currentTargetId = null;
         private static int _cachedPort = -1;
-        private static SettingsForm _openSettingsForm = null;
-        private static HiddenAnchorForm _hiddenForm = null;
+        private static SettingsForm _mainForm = null;
 
         [STAThread]
         static void Main(string[] args)
@@ -42,20 +41,18 @@ namespace SonarAutoSwitch
             {
                 if (!createdNew)
                 {
-                    // Already running: signal the background instance to show its settings window
-                    try
-                    {
-                        using (var evt = EventWaitHandle.OpenExisting(EventName))
-                        {
-                            evt.Set();
-                        }
-                    }
-                    catch { }
+                    // A background instance is already running.
+                    // Open SettingsForm directly in this process so the user immediately gets the window!
+                    AppConfig cfg = AppConfig.Load();
+                    var settingsDialog = new SettingsForm(cfg, null);
+                    settingsDialog.AllowRealExit = true;
+                    Application.Run(settingsDialog);
                     return;
                 }
 
                 _config = AppConfig.Load();
                 SonarClient.Log("=== SonarAutoSwitch Service Started ===");
+                SonarClient.Log("Step A: Config loaded");
 
                 // Ensure initial startup shortcut is set if enabled
                 if (_config.AutoStartWithWindows)
@@ -66,15 +63,25 @@ namespace SonarAutoSwitch
                         string lnkPath = Path.Combine(startupPath, "SonarAutoSwitch.lnk");
                         if (!File.Exists(lnkPath))
                         {
-                            SettingsForm.CreateShortcut(lnkPath, Application.ExecutablePath);
+                            SettingsForm.CreateShortcut(lnkPath, Application.ExecutablePath, "--silent");
                         }
                     }
-                    catch { }
+                    catch (Exception ex)
+                    {
+                        SonarClient.Log("Error in startup shortcut: " + ex.Message);
+                    }
                 }
+                SonarClient.Log("Step B: Startup check passed");
 
-                _hiddenForm = new HiddenAnchorForm();
+                _mainForm = new SettingsForm(_config, () =>
+                {
+                    _config = AppConfig.Load();
+                    _currentTargetId = null; // Forces re-evaluation
+                });
+                SonarClient.Log("Step C: SettingsForm created");
 
                 InitializeTray();
+                SonarClient.Log("Step D: InitializeTray done");
 
                 // Setup IPC listener to show settings when user runs the exe again
                 EventWaitHandle showSettingsEvent = new EventWaitHandle(false, EventResetMode.AutoReset, EventName);
@@ -82,11 +89,15 @@ namespace SonarAutoSwitch
                 {
                     while (_isRunning)
                     {
-                        if (showSettingsEvent.WaitOne(500))
+                        if (showSettingsEvent.WaitOne(300))
                         {
-                            if (_isRunning && _hiddenForm != null && _hiddenForm.IsHandleCreated)
+                            if (_isRunning && _mainForm != null)
                             {
-                                _hiddenForm.BeginInvoke(new Action(ShowSettings));
+                                try
+                                {
+                                    _mainForm.BeginInvoke(new Action(ShowSettings));
+                                }
+                                catch { }
                             }
                         }
                     }
@@ -96,6 +107,7 @@ namespace SonarAutoSwitch
                     Name = "SettingsIpcListener"
                 };
                 ipcThread.Start();
+                SonarClient.Log("Step E: IPC thread started");
 
                 // Start background worker for audio monitoring
                 _workerThread = new Thread(WorkerLoop)
@@ -104,14 +116,26 @@ namespace SonarAutoSwitch
                     Name = "SonarMonitorWorker"
                 };
                 _workerThread.Start();
+                SonarClient.Log("Step F: Worker thread started");
 
-                // If user passed --settings argument, show settings immediately
-                if (args.Length > 0 && args[0].ToLowerInvariant().Contains("setting"))
+                bool silent = args.Length > 0 && args[0].ToLowerInvariant().Contains("silent");
+                SonarClient.Log("Step G: silent = " + silent);
+                if (silent)
                 {
-                    _hiddenForm.Load += (s, e) => ShowSettings();
+                    _mainForm.WindowState = FormWindowState.Minimized;
+                    _mainForm.ShowInTaskbar = false;
+                    _mainForm.Opacity = 0;
+                    _mainForm.Load += (s, e) =>
+                    {
+                        _mainForm.Hide();
+                        _mainForm.Opacity = 1;
+                        _mainForm.ShowInTaskbar = true;
+                    };
                 }
 
-                Application.Run(_hiddenForm);
+                SonarClient.Log("Step H: Calling Application.Run(_mainForm)");
+                Application.Run(_mainForm);
+                SonarClient.Log("Step I: Application.Run finished!");
 
                 _isRunning = false;
                 if (_trayIcon != null)
@@ -146,7 +170,7 @@ namespace SonarAutoSwitch
 
             _trayMenu.Items.Add(new ToolStripSeparator());
 
-            var itemExit = new ToolStripMenuItem("❌ Exit (خروج)", null, (s, e) => ExitApp());
+            var itemExit = new ToolStripMenuItem("❌ Exit (خروج نهائي)", null, (s, e) => ExitApp());
             _trayMenu.Items.Add(itemExit);
 
             _trayIcon = new NotifyIcon
@@ -162,68 +186,31 @@ namespace SonarAutoSwitch
 
         private static Icon CreateAppIcon()
         {
-            using (Bitmap bmp = new Bitmap(32, 32))
-            using (Graphics g = Graphics.FromImage(bmp))
+            try
             {
-                g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-                g.Clear(Color.Transparent);
-
-                // Background Circle (Dark Teal/Steel)
-                using (Brush b = new SolidBrush(Color.FromArgb(24, 24, 37)))
-                {
-                    g.FillEllipse(b, 1, 1, 29, 29);
-                }
-                using (Pen p = new Pen(Color.FromArgb(137, 180, 250), 2.0f))
-                {
-                    g.DrawEllipse(p, 1, 1, 29, 29);
-                }
-
-                // Headphone headband arch
-                using (Pen archPen = new Pen(Color.FromArgb(166, 227, 161), 2.5f))
-                {
-                    g.DrawArc(archPen, 7, 7, 17, 15, 180, 180);
-                }
-
-                // Left and right ear cups
-                using (Brush cupBrush = new SolidBrush(Color.FromArgb(137, 180, 250)))
-                {
-                    g.FillRectangle(cupBrush, 6, 14, 4, 8);
-                    g.FillRectangle(cupBrush, 21, 14, 4, 8);
-                }
-
-                IntPtr hIcon = bmp.GetHicon();
-                return Icon.FromHandle(hIcon);
+                Icon exeIcon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
+                if (exeIcon != null) return exeIcon;
             }
+            catch { }
+            return SystemIcons.Application;
         }
 
         public static void ShowSettings()
         {
             try
             {
-                if (_openSettingsForm != null && !_openSettingsForm.IsDisposed)
+                if (_mainForm != null && !_mainForm.IsDisposed)
                 {
-                    if (_openSettingsForm.WindowState == FormWindowState.Minimized)
+                    _mainForm.Show();
+                    if (_mainForm.WindowState == FormWindowState.Minimized)
                     {
-                        _openSettingsForm.WindowState = FormWindowState.Normal;
+                        _mainForm.WindowState = FormWindowState.Normal;
                     }
-                    _openSettingsForm.BringToFront();
-                    _openSettingsForm.Activate();
-                    _openSettingsForm.TopMost = true;
-                    _openSettingsForm.TopMost = false;
-                    return;
+                    _mainForm.BringToFront();
+                    _mainForm.Activate();
+                    _mainForm.TopMost = true;
+                    _mainForm.TopMost = false;
                 }
-
-                _openSettingsForm = new SettingsForm(_config, () =>
-                {
-                    _config = AppConfig.Load();
-                    _currentTargetId = null; // Forces re-evaluation
-                });
-
-                _openSettingsForm.Show();
-                _openSettingsForm.BringToFront();
-                _openSettingsForm.Activate();
-                _openSettingsForm.TopMost = true;
-                _openSettingsForm.TopMost = false;
             }
             catch (Exception ex)
             {
@@ -257,9 +244,10 @@ namespace SonarAutoSwitch
         {
             _isRunning = false;
             SonarClient.Log("SonarAutoSwitch closed by user.");
-            if (_hiddenForm != null && !_hiddenForm.IsDisposed)
+            if (_mainForm != null && !_mainForm.IsDisposed)
             {
-                _hiddenForm.Close();
+                _mainForm.AllowRealExit = true;
+                _mainForm.Close();
             }
             Application.Exit();
         }
@@ -278,6 +266,12 @@ namespace SonarAutoSwitch
                     if (verifyCounter >= 10) // ~15 seconds periodic audit
                     {
                         verifyCounter = 0;
+                        try
+                        {
+                            _config = AppConfig.Load();
+                        }
+                        catch { }
+
                         if (_cachedPort > 0 && !string.IsNullOrEmpty(_currentTargetId))
                         {
                             if (!SonarClient.IsSonarMatching(_cachedPort, _currentTargetId, _config.Channels))
@@ -364,18 +358,6 @@ namespace SonarAutoSwitch
                     }
                 }
             }
-        }
-    }
-
-    internal class HiddenAnchorForm : Form
-    {
-        public HiddenAnchorForm()
-        {
-            this.WindowState = FormWindowState.Minimized;
-            this.ShowInTaskbar = false;
-            this.FormBorderStyle = FormBorderStyle.None;
-            this.Size = new Size(0, 0);
-            this.Opacity = 0;
         }
     }
 }
