@@ -65,6 +65,7 @@ namespace SonarAutoSwitch
         protected override void OnShown(EventArgs e)
         {
             base.OnShown(e);
+            SonarClient.Log("SettingsForm OnShown - startSilent=" + _startSilent);
             if (_startSilent)
             {
                 this.Hide();
@@ -660,6 +661,7 @@ namespace SonarAutoSwitch
 
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
+            SonarClient.Log(string.Format("SettingsForm OnFormClosing - reason={0}, isExiting={1}", e.CloseReason, _isExiting));
             if (!_isExiting && e.CloseReason == CloseReason.UserClosing)
             {
                 e.Cancel = true;

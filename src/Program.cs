@@ -24,6 +24,10 @@ namespace SonarAutoSwitch
         [STAThread]
         static void Main(string[] args)
         {
+            AppDomain.CurrentDomain.FirstChanceException += (s, e) =>
+            {
+                SonarClient.Log("FirstChance: " + e.Exception.GetType().Name + ": " + e.Exception.Message + " in " + e.Exception.Source);
+            };
             AppDomain.CurrentDomain.UnhandledException += (s, e) =>
             {
                 SonarClient.Log("Unhandled exception: " + e.ExceptionObject);
@@ -90,8 +94,11 @@ namespace SonarAutoSwitch
                 }
 
                 bool silent = args.Length > 0 && args[0].ToLowerInvariant().Contains("silent");
+                SonarClient.Log(string.Format("Program Main - createdNew={0}, silent={1}", createdNew, silent));
                 var mainForm = new SettingsForm(config, silent);
+                SonarClient.Log("Program Main - Calling Application.Run");
                 Application.Run(mainForm);
+                SonarClient.Log("Program Main - Application.Run ended");
             }
         }
     }
