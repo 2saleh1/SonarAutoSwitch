@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Windows.Forms;
 
@@ -335,6 +336,44 @@ namespace SonarAutoSwitch
             this.Controls.Add(footerPanel);
         }
 
+        [DllImport("user32.dll")]
+        private static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow);
+
+        [DllImport("user32.dll")]
+        private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+        [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+        private static extern uint RegisterWindowMessage(string lpString);
+
+        private uint _msgTaskbarCreated = 0;
+
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            try
+            {
+                _msgTaskbarCreated = RegisterWindowMessage("TaskbarCreated");
+            }
+            catch { }
+        }
+
+        protected override void WndProc(ref Message m)
+        {
+            if (_msgTaskbarCreated != 0 && (uint)m.Msg == _msgTaskbarCreated)
+            {
+                try
+                {
+                    if (_trayIcon != null)
+                    {
+                        _trayIcon.Visible = false;
+                        _trayIcon.Visible = true;
+                    }
+                }
+                catch { }
+            }
+            base.WndProc(ref m);
+        }
+
         private void InitializeTray()
         {
             try
@@ -364,11 +403,25 @@ namespace SonarAutoSwitch
                 var itemExit = new ToolStripMenuItem("❌ Exit (إغلاق نهائي)", null, (s, e) => ExitApplication());
                 _trayMenu.Items.Add(itemExit);
 
+                Icon appIcon = null;
+                try
+                {
+                    appIcon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
+                }
+                catch { }
+
+                if (appIcon == null)
+                {
+                    appIcon = CreateTrayIcon();
+                }
+
+                this.Icon = appIcon;
+
                 _trayIcon = new NotifyIcon
                 {
                     Text = "Sonar Auto Switcher",
                     ContextMenuStrip = _trayMenu,
-                    Icon = CreateTrayIcon(),
+                    Icon = appIcon,
                     Visible = true
                 };
 
@@ -415,27 +468,41 @@ namespace SonarAutoSwitch
 
         public void RestoreWindow()
         {
+            if (this.InvokeRequired)
+            {
+                this.BeginInvoke(new Action(RestoreWindow));
+                return;
+            }
+
             try
             {
-                this.Show();
-                this.WindowState = FormWindowState.Normal;
+                this.Opacity = 1;
                 this.ShowInTaskbar = true;
+                this.Visible = true;
+                if (this.WindowState == FormWindowState.Minimized)
+                {
+                    this.WindowState = FormWindowState.Normal;
+                }
+                this.Show();
+                ShowWindowAsync(this.Handle, 9 /* SW_RESTORE */);
                 this.BringToFront();
                 this.Activate();
-                this.TopMost = true;
-                this.TopMost = false;
+                SetForegroundWindow(this.Handle);
             }
-            catch { }
+            catch (Exception ex)
+            {
+                SonarClient.Log("Error restoring window: " + ex.Message);
+            }
         }
 
         private void StartIpcListener()
         {
             _ipcThread = new Thread(() =>
             {
-                EventWaitHandle evt = new EventWaitHandle(false, EventResetMode.AutoReset, "Local\\SonarAutoSwitch_ShowSettings_Event");
+                EventWaitHandle evt = new EventWaitHandle(false, EventResetMode.AutoReset, Program.EventName);
                 while (_isRunning)
                 {
-                    if (evt.WaitOne(300))
+                    if (evt.WaitOne(250))
                     {
                         if (_isRunning)
                         {
@@ -443,7 +510,10 @@ namespace SonarAutoSwitch
                             {
                                 this.BeginInvoke(new Action(RestoreWindow));
                             }
-                            catch { }
+                            catch (Exception ex)
+                            {
+                                SonarClient.Log("Error invoking RestoreWindow from IPC: " + ex.Message);
+                            }
                         }
                     }
                 }
@@ -815,6 +885,7 @@ namespace SonarAutoSwitch
                 }
                 shortcut.WorkingDirectory = Path.GetDirectoryName(targetPath);
                 shortcut.Description = "Sonar Auto Switcher";
+                shortcut.IconLocation = targetPath + ",0";
                 shortcut.Save();
             }
             catch { }

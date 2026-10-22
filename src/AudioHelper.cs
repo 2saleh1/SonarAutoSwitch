@@ -115,13 +115,17 @@ namespace SonarAutoSwitch
             var active = GetActiveRenderDevices();
             string lowerKw = keyword.Trim().ToLowerInvariant();
 
-            // 1. Exact or partial match on Friendly Name or Description
+            // 1. Exact or partial match on Friendly Name or Description (preferring Stereo over Hands-Free)
             foreach (var d in active)
             {
                 string n = (d.Name ?? "").ToLowerInvariant();
                 string desc = (d.Description ?? "").ToLowerInvariant();
 
-                if (n.Contains(lowerKw) || desc.Contains(lowerKw))
+                bool isHandsFree = n.Contains("hands-free") || n.Contains("handsfree") ||
+                                   desc.Contains("hands-free") || desc.Contains("handsfree") ||
+                                   n.Contains("hf audio") || desc.Contains("hf audio");
+
+                if (!isHandsFree && (n.Contains(lowerKw) || desc.Contains(lowerKw)))
                 {
                     return d;
                 }
@@ -131,6 +135,18 @@ namespace SonarAutoSwitch
             foreach (var d in active)
             {
                 if (string.Equals(d.Id, keyword, StringComparison.OrdinalIgnoreCase))
+                {
+                    return d;
+                }
+            }
+
+            // 3. Fallback to Hands-Free if no Stereo device was found
+            foreach (var d in active)
+            {
+                string n = (d.Name ?? "").ToLowerInvariant();
+                string desc = (d.Description ?? "").ToLowerInvariant();
+
+                if (n.Contains(lowerKw) || desc.Contains(lowerKw))
                 {
                     return d;
                 }

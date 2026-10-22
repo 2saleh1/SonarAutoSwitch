@@ -14,7 +14,7 @@ if not exist "%CSC%" (
     exit /b 1
 )
 
-"%CSC%" /nologo /target:winexe /optimize /out:bin\SonarAutoSwitch.exe /r:System.dll /r:System.Core.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll /r:Microsoft.CSharp.dll src\*.cs
+"%CSC%" /nologo /target:winexe /optimize /win32icon:app.ico /out:bin\SonarAutoSwitch.exe /r:System.dll /r:System.Core.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll /r:Microsoft.CSharp.dll src\*.cs
 
 if %ERRORLEVEL% equ 0 (
     echo [SUCCESS] Built successfully: bin\SonarAutoSwitch.exe

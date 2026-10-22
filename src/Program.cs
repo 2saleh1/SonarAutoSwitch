@@ -1,5 +1,7 @@
 using System;
+using System.Diagnostics;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Windows.Forms;
 
@@ -8,7 +10,16 @@ namespace SonarAutoSwitch
     static class Program
     {
         private const string MutexName = "Local\\SonarAutoSwitch_SingleInstance_Mutex";
-        private const string EventName = "Local\\SonarAutoSwitch_ShowSettings_Event";
+        public const string EventName = "Local\\SonarAutoSwitch_ShowSettings_Event";
+
+        [DllImport("user32.dll")]
+        private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        private static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow);
+
+        [DllImport("user32.dll")]
+        private static extern bool AllowSetForegroundWindow(int dwProcessId);
 
         [STAThread]
         static void Main(string[] args)
@@ -30,15 +41,33 @@ namespace SonarAutoSwitch
             {
                 if (!createdNew)
                 {
-                    // A background instance is already running: signal it to bring its settings window to the front!
+                    // An instance is already running: signal it and grant foreground permission
                     try
                     {
+                        Process current = Process.GetCurrentProcess();
+                        foreach (Process p in Process.GetProcessesByName(current.ProcessName))
+                        {
+                            if (p.Id != current.Id)
+                            {
+                                AllowSetForegroundWindow(p.Id);
+                                if (p.MainWindowHandle != IntPtr.Zero)
+                                {
+                                    ShowWindowAsync(p.MainWindowHandle, 9 /* SW_RESTORE */);
+                                    SetForegroundWindow(p.MainWindowHandle);
+                                }
+                                break;
+                            }
+                        }
+
                         using (var evt = EventWaitHandle.OpenExisting(EventName))
                         {
                             evt.Set();
                         }
                     }
-                    catch { }
+                    catch (Exception ex)
+                    {
+                        SonarClient.Log("Error signaling running instance: " + ex.Message);
+                    }
                     return;
                 }
 
