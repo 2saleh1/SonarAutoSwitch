@@ -10,6 +10,8 @@ namespace SonarAutoSwitch
     static class Program
     {
         private const string MutexName = "Local\\SonarAutoSwitch_SingleInstance_Mutex";
+        private const string EventName = "Local\\SonarAutoSwitch_ShowSettings_Event";
+
         private static NotifyIcon _trayIcon;
         private static ContextMenuStrip _trayMenu;
         private static AppConfig _config;
@@ -18,10 +20,20 @@ namespace SonarAutoSwitch
         private static string _currentTargetId = null;
         private static int _cachedPort = -1;
         private static SettingsForm _openSettingsForm = null;
+        private static HiddenAnchorForm _hiddenForm = null;
 
         [STAThread]
         static void Main(string[] args)
         {
+            AppDomain.CurrentDomain.UnhandledException += (s, e) =>
+            {
+                SonarClient.Log("Unhandled exception: " + e.ExceptionObject);
+            };
+            Application.ThreadException += (s, e) =>
+            {
+                SonarClient.Log("Thread exception: " + e.Exception.Message);
+            };
+
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
 
@@ -30,22 +42,17 @@ namespace SonarAutoSwitch
             {
                 if (!createdNew)
                 {
-                    MessageBox.Show(
-                        "برنامج SonarAutoSwitch يعمل بالفعل في شريط المهام بجانب الساعة!",
-                        "Sonar Auto Switch",
-                        MessageBoxButtons.OK,
-                        MessageBoxIcon.Information);
+                    // Already running: signal the background instance to show its settings window
+                    try
+                    {
+                        using (var evt = EventWaitHandle.OpenExisting(EventName))
+                        {
+                            evt.Set();
+                        }
+                    }
+                    catch { }
                     return;
                 }
-
-                AppDomain.CurrentDomain.UnhandledException += (s, e) =>
-                {
-                    SonarClient.Log("Unhandled exception: " + e.ExceptionObject);
-                };
-                Application.ThreadException += (s, e) =>
-                {
-                    SonarClient.Log("Thread exception: " + e.Exception.Message);
-                };
 
                 _config = AppConfig.Load();
                 SonarClient.Log("=== SonarAutoSwitch Service Started ===");
@@ -65,9 +72,32 @@ namespace SonarAutoSwitch
                     catch { }
                 }
 
+                _hiddenForm = new HiddenAnchorForm();
+
                 InitializeTray();
 
-                // Start background worker
+                // Setup IPC listener to show settings when user runs the exe again
+                EventWaitHandle showSettingsEvent = new EventWaitHandle(false, EventResetMode.AutoReset, EventName);
+                Thread ipcThread = new Thread(() =>
+                {
+                    while (_isRunning)
+                    {
+                        if (showSettingsEvent.WaitOne(500))
+                        {
+                            if (_isRunning && _hiddenForm != null && _hiddenForm.IsHandleCreated)
+                            {
+                                _hiddenForm.BeginInvoke(new Action(ShowSettings));
+                            }
+                        }
+                    }
+                })
+                {
+                    IsBackground = true,
+                    Name = "SettingsIpcListener"
+                };
+                ipcThread.Start();
+
+                // Start background worker for audio monitoring
                 _workerThread = new Thread(WorkerLoop)
                 {
                     IsBackground = true,
@@ -78,10 +108,10 @@ namespace SonarAutoSwitch
                 // If user passed --settings argument, show settings immediately
                 if (args.Length > 0 && args[0].ToLowerInvariant().Contains("setting"))
                 {
-                    ShowSettings();
+                    _hiddenForm.Load += (s, e) => ShowSettings();
                 }
 
-                Application.Run(new ApplicationContext());
+                Application.Run(_hiddenForm);
 
                 _isRunning = false;
                 if (_trayIcon != null)
@@ -121,7 +151,7 @@ namespace SonarAutoSwitch
 
             _trayIcon = new NotifyIcon
             {
-                Text = "Sonar Auto Switcher (يعمل في الخلفية)",
+                Text = "Sonar Auto Switcher",
                 ContextMenuStrip = _trayMenu,
                 Icon = CreateAppIcon(),
                 Visible = true
@@ -132,7 +162,6 @@ namespace SonarAutoSwitch
 
         private static Icon CreateAppIcon()
         {
-            // Programmatically draw a crisp 32x32 headphone/soundwave icon
             using (Bitmap bmp = new Bitmap(32, 32))
             using (Graphics g = Graphics.FromImage(bmp))
             {
@@ -167,23 +196,39 @@ namespace SonarAutoSwitch
             }
         }
 
-        private static void ShowSettings()
+        public static void ShowSettings()
         {
-            if (_openSettingsForm != null && !_openSettingsForm.IsDisposed)
+            try
             {
+                if (_openSettingsForm != null && !_openSettingsForm.IsDisposed)
+                {
+                    if (_openSettingsForm.WindowState == FormWindowState.Minimized)
+                    {
+                        _openSettingsForm.WindowState = FormWindowState.Normal;
+                    }
+                    _openSettingsForm.BringToFront();
+                    _openSettingsForm.Activate();
+                    _openSettingsForm.TopMost = true;
+                    _openSettingsForm.TopMost = false;
+                    return;
+                }
+
+                _openSettingsForm = new SettingsForm(_config, () =>
+                {
+                    _config = AppConfig.Load();
+                    _currentTargetId = null; // Forces re-evaluation
+                });
+
+                _openSettingsForm.Show();
                 _openSettingsForm.BringToFront();
                 _openSettingsForm.Activate();
-                return;
+                _openSettingsForm.TopMost = true;
+                _openSettingsForm.TopMost = false;
             }
-
-            _openSettingsForm = new SettingsForm(_config, () =>
+            catch (Exception ex)
             {
-                // Reload config in worker immediately
-                _config = AppConfig.Load();
-                _currentTargetId = null; // Forces re-evaluation
-            });
-
-            _openSettingsForm.Show();
+                SonarClient.Log("Error showing settings: " + ex.Message);
+            }
         }
 
         private static void ForceSwitch()
@@ -212,6 +257,10 @@ namespace SonarAutoSwitch
         {
             _isRunning = false;
             SonarClient.Log("SonarAutoSwitch closed by user.");
+            if (_hiddenForm != null && !_hiddenForm.IsDisposed)
+            {
+                _hiddenForm.Close();
+            }
             Application.Exit();
         }
 
@@ -250,7 +299,6 @@ namespace SonarAutoSwitch
 
         private static void EvaluateAndSwitch()
         {
-            // 1. Evaluate fallback priorities in order
             AudioDeviceInfo desiredDevice = null;
 
             foreach (var kw in _config.PriorityDevices)
@@ -263,7 +311,6 @@ namespace SonarAutoSwitch
                 }
             }
 
-            // 2. If no priority device is active, fallback to DefaultDevice
             if (desiredDevice == null && !string.IsNullOrEmpty(_config.DefaultDevice))
             {
                 desiredDevice = AudioHelper.FindMatchingActiveDevice(_config.DefaultDevice);
@@ -271,11 +318,9 @@ namespace SonarAutoSwitch
 
             if (desiredDevice == null)
             {
-                // No matched active device currently
                 return;
             }
 
-            // 3. Check if switch is needed
             if (desiredDevice.Id != _currentTargetId)
             {
                 if (_cachedPort <= 0)
@@ -294,7 +339,6 @@ namespace SonarAutoSwitch
 
                     if (!ok)
                     {
-                        // Sonar might have restarted on a different port
                         _cachedPort = SonarClient.GetSonarPort();
                         if (_cachedPort > 0)
                         {
@@ -320,6 +364,18 @@ namespace SonarAutoSwitch
                     }
                 }
             }
+        }
+    }
+
+    internal class HiddenAnchorForm : Form
+    {
+        public HiddenAnchorForm()
+        {
+            this.WindowState = FormWindowState.Minimized;
+            this.ShowInTaskbar = false;
+            this.FormBorderStyle = FormBorderStyle.None;
+            this.Size = new Size(0, 0);
+            this.Opacity = 0;
         }
     }
 }
