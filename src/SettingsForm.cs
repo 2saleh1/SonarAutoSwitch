@@ -71,6 +71,15 @@ namespace SonarAutoSwitch
                 this.Opacity = 1;
                 this.ShowInTaskbar = true;
             }
+            else
+            {
+                this.WindowState = FormWindowState.Normal;
+                this.ShowInTaskbar = true;
+                this.BringToFront();
+                this.Activate();
+                ShowWindowAsync(this.Handle, 9 /* SW_RESTORE */);
+                SetForegroundWindow(this.Handle);
+            }
         }
 
         private void InitializeComponents()

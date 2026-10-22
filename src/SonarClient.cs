@@ -187,7 +187,7 @@ namespace SonarAutoSwitch
                         string body = sr.ReadToEnd();
                         foreach (var ch in channels)
                         {
-                            string needle = string.Format("\"{0}\":\"{1}\"", ch, targetDeviceId);
+                            string needle = string.Format("\"id\":\"{0}\",\"deviceId\":\"{1}\"", ch, targetDeviceId);
                             if (!body.Contains(needle))
                             {
                                 return false;
