@@ -38,6 +38,15 @@ namespace SonarAutoSwitch
                     return;
                 }
 
+                AppDomain.CurrentDomain.UnhandledException += (s, e) =>
+                {
+                    SonarClient.Log("Unhandled exception: " + e.ExceptionObject);
+                };
+                Application.ThreadException += (s, e) =>
+                {
+                    SonarClient.Log("Thread exception: " + e.Exception.Message);
+                };
+
                 _config = AppConfig.Load();
                 SonarClient.Log("=== SonarAutoSwitch Service Started ===");
 
@@ -72,7 +81,7 @@ namespace SonarAutoSwitch
                     ShowSettings();
                 }
 
-                Application.Run();
+                Application.Run(new ApplicationContext());
 
                 _isRunning = false;
                 if (_trayIcon != null)
