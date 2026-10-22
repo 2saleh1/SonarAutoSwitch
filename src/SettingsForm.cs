@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
+using System.Threading;
 using System.Windows.Forms;
 
 namespace SonarAutoSwitch
@@ -9,8 +10,10 @@ namespace SonarAutoSwitch
     public class SettingsForm : Form
     {
         private AppConfig _config;
-        private Action _onConfigChanged;
+        private bool _startSilent;
+        private bool _isExiting = false;
 
+        // UI Controls
         private ListBox _listPriorities;
         private ComboBox _comboActiveDevices;
         private TextBox _txtCustomKeyword;
@@ -18,6 +21,15 @@ namespace SonarAutoSwitch
         private CheckBox _chkNotifications;
         private CheckBox _chkAutoStart;
         private Label _lblStatus;
+
+        // Tray Icon & Worker
+        private NotifyIcon _trayIcon;
+        private ContextMenuStrip _trayMenu;
+        private Thread _workerThread;
+        private Thread _ipcThread;
+        private volatile bool _isRunning = true;
+        private string _currentTargetId = null;
+        private int _cachedPort = -1;
 
         // Color Palette (Modern Dark / Catppuccin Mocha style)
         private static readonly Color BgDark = Color.FromArgb(24, 24, 37);
@@ -29,14 +41,35 @@ namespace SonarAutoSwitch
         private static readonly Color AccentGreen = Color.FromArgb(166, 227, 161);
         private static readonly Color AccentRed = Color.FromArgb(243, 139, 168);
 
-        public SettingsForm(AppConfig config, Action onConfigChanged)
+        public SettingsForm(AppConfig config, bool startSilent)
         {
             _config = config;
-            _onConfigChanged = onConfigChanged;
+            _startSilent = startSilent;
 
             InitializeComponents();
             LoadConfigData();
             RefreshDeviceLists();
+            InitializeTray();
+            StartIpcListener();
+            StartAudioWorker();
+
+            if (_startSilent)
+            {
+                this.WindowState = FormWindowState.Minimized;
+                this.ShowInTaskbar = false;
+                this.Opacity = 0;
+            }
+        }
+
+        protected override void OnShown(EventArgs e)
+        {
+            base.OnShown(e);
+            if (_startSilent)
+            {
+                this.Hide();
+                this.Opacity = 1;
+                this.ShowInTaskbar = true;
+            }
         }
 
         private void InitializeComponents()
@@ -46,10 +79,16 @@ namespace SonarAutoSwitch
             this.StartPosition = FormStartPosition.CenterScreen;
             this.FormBorderStyle = FormBorderStyle.FixedDialog;
             this.MaximizeBox = false;
-            this.MinimizeBox = false;
+            this.MinimizeBox = true;
             this.BackColor = BgDark;
             this.ForeColor = TextPrimary;
             this.Font = new Font("Segoe UI", 9.5f, FontStyle.Regular);
+
+            try
+            {
+                this.Icon = CreateTrayIcon();
+            }
+            catch { }
 
             // Header Panel
             Panel headerPanel = new Panel
@@ -281,19 +320,298 @@ namespace SonarAutoSwitch
 
             Button btnCancel = new Button
             {
-                Text = "Close (إغلاق)",
-                Size = new Size(120, 38),
-                Location = new Point(415, 14),
+                Text = "Hide to Tray (إخفاء)",
+                Size = new Size(130, 38),
+                Location = new Point(410, 14),
                 BackColor = BgInput,
                 ForeColor = TextPrimary,
                 FlatStyle = FlatStyle.Flat,
                 Cursor = Cursors.Hand
             };
             btnCancel.FlatAppearance.BorderSize = 0;
-            btnCancel.Click += (s, e) => this.Close();
+            btnCancel.Click += (s, e) => this.Hide();
             footerPanel.Controls.Add(btnCancel);
 
             this.Controls.Add(footerPanel);
+        }
+
+        private void InitializeTray()
+        {
+            try
+            {
+                _trayMenu = new ContextMenuStrip();
+
+                var itemTitle = new ToolStripMenuItem("🎧 Sonar Auto Switcher")
+                {
+                    Enabled = false,
+                    Font = new Font("Segoe UI", 9f, FontStyle.Bold)
+                };
+                _trayMenu.Items.Add(itemTitle);
+                _trayMenu.Items.Add(new ToolStripSeparator());
+
+                var itemSettings = new ToolStripMenuItem("⚙️ Settings (الإعدادات)...", null, (s, e) => RestoreWindow());
+                itemSettings.Font = new Font("Segoe UI", 9f, FontStyle.Bold);
+                _trayMenu.Items.Add(itemSettings);
+
+                var itemSwitch = new ToolStripMenuItem("🔄 Switch Now (تحويل فوري)", null, (s, e) => ForceSwitch());
+                _trayMenu.Items.Add(itemSwitch);
+
+                var itemLogs = new ToolStripMenuItem("📄 View Logs (سجل العمليات)...", null, (s, e) => OpenLogFile());
+                _trayMenu.Items.Add(itemLogs);
+
+                _trayMenu.Items.Add(new ToolStripSeparator());
+
+                var itemExit = new ToolStripMenuItem("❌ Exit (إغلاق نهائي)", null, (s, e) => ExitApplication());
+                _trayMenu.Items.Add(itemExit);
+
+                _trayIcon = new NotifyIcon
+                {
+                    Text = "Sonar Auto Switcher",
+                    ContextMenuStrip = _trayMenu,
+                    Icon = CreateTrayIcon(),
+                    Visible = true
+                };
+
+                _trayIcon.DoubleClick += (s, e) => RestoreWindow();
+            }
+            catch (Exception ex)
+            {
+                SonarClient.Log("Error initializing tray icon: " + ex.Message);
+            }
+        }
+
+        private Icon CreateTrayIcon()
+        {
+            try
+            {
+                using (Bitmap bmp = new Bitmap(16, 16))
+                using (Graphics g = Graphics.FromImage(bmp))
+                {
+                    g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                    g.Clear(Color.Transparent);
+
+                    using (Brush b = new SolidBrush(Color.FromArgb(24, 24, 37)))
+                    {
+                        g.FillEllipse(b, 0, 0, 15, 15);
+                    }
+                    using (Pen p = new Pen(Color.FromArgb(137, 180, 250), 1.5f))
+                    {
+                        g.DrawEllipse(p, 0, 0, 15, 15);
+                    }
+                    using (Brush b2 = new SolidBrush(Color.FromArgb(166, 227, 161)))
+                    {
+                        g.FillEllipse(b2, 4, 4, 7, 7);
+                    }
+
+                    IntPtr h = bmp.GetHicon();
+                    return Icon.FromHandle(h);
+                }
+            }
+            catch
+            {
+                return SystemIcons.Application;
+            }
+        }
+
+        public void RestoreWindow()
+        {
+            try
+            {
+                this.Show();
+                this.WindowState = FormWindowState.Normal;
+                this.ShowInTaskbar = true;
+                this.BringToFront();
+                this.Activate();
+                this.TopMost = true;
+                this.TopMost = false;
+            }
+            catch { }
+        }
+
+        private void StartIpcListener()
+        {
+            _ipcThread = new Thread(() =>
+            {
+                EventWaitHandle evt = new EventWaitHandle(false, EventResetMode.AutoReset, "Local\\SonarAutoSwitch_ShowSettings_Event");
+                while (_isRunning)
+                {
+                    if (evt.WaitOne(300))
+                    {
+                        if (_isRunning)
+                        {
+                            try
+                            {
+                                this.BeginInvoke(new Action(RestoreWindow));
+                            }
+                            catch { }
+                        }
+                    }
+                }
+            })
+            {
+                IsBackground = true,
+                Name = "IpcListenerThread"
+            };
+            _ipcThread.Start();
+        }
+
+        private void StartAudioWorker()
+        {
+            _workerThread = new Thread(WorkerLoop)
+            {
+                IsBackground = true,
+                Name = "SonarAudioWorker"
+            };
+            _workerThread.Start();
+        }
+
+        private void WorkerLoop()
+        {
+            int verifyCounter = 0;
+
+            while (_isRunning)
+            {
+                try
+                {
+                    EvaluateAndSwitch();
+
+                    verifyCounter++;
+                    if (verifyCounter >= 10) // Every ~15 seconds audit
+                    {
+                        verifyCounter = 0;
+                        try
+                        {
+                            _config = AppConfig.Load();
+                        }
+                        catch { }
+
+                        if (_cachedPort > 0 && !string.IsNullOrEmpty(_currentTargetId))
+                        {
+                            if (!SonarClient.IsSonarMatching(_cachedPort, _currentTargetId, _config.Channels))
+                            {
+                                SonarClient.Log("Drift detected in Sonar output channels. Re-applying current target...");
+                                _currentTargetId = null;
+                            }
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    SonarClient.Log("Worker loop exception: " + ex.Message);
+                }
+
+                Thread.Sleep(1500);
+            }
+        }
+
+        private void EvaluateAndSwitch()
+        {
+            AudioDeviceInfo desiredDevice = null;
+
+            foreach (var kw in _config.PriorityDevices)
+            {
+                var match = AudioHelper.FindMatchingActiveDevice(kw);
+                if (match != null)
+                {
+                    desiredDevice = match;
+                    break;
+                }
+            }
+
+            if (desiredDevice == null && !string.IsNullOrEmpty(_config.DefaultDevice))
+            {
+                desiredDevice = AudioHelper.FindMatchingActiveDevice(_config.DefaultDevice);
+            }
+
+            if (desiredDevice == null) return;
+
+            if (desiredDevice.Id != _currentTargetId)
+            {
+                if (_cachedPort <= 0)
+                {
+                    _cachedPort = SonarClient.GetSonarPort();
+                }
+
+                if (_cachedPort > 0)
+                {
+                    bool ok = SonarClient.SwitchChannels(
+                        _cachedPort,
+                        desiredDevice.Id,
+                        desiredDevice.DisplayName,
+                        _config.Channels,
+                        _config.IncludeMonitoring);
+
+                    if (!ok)
+                    {
+                        _cachedPort = SonarClient.GetSonarPort();
+                        if (_cachedPort > 0)
+                        {
+                            ok = SonarClient.SwitchChannels(
+                                _cachedPort,
+                                desiredDevice.Id,
+                                desiredDevice.DisplayName,
+                                _config.Channels,
+                                _config.IncludeMonitoring);
+                        }
+                    }
+
+                    if (ok)
+                    {
+                        _currentTargetId = desiredDevice.Id;
+
+                        if (_config.ShowNotifications && _trayIcon != null)
+                        {
+                            string msg = string.Format("تم تحويل مخرجات Sonar إلى:\n{0}", desiredDevice.Name);
+                            _trayIcon.ShowBalloonTip(3000, "Sonar Auto Switch", msg, ToolTipIcon.Info);
+                        }
+                    }
+                }
+            }
+        }
+
+        private void ForceSwitch()
+        {
+            _currentTargetId = null;
+            SonarClient.Log("Manual switch requested by user.");
+            ThreadPool.QueueUserWorkItem((state) =>
+            {
+                EvaluateAndSwitch();
+            });
+        }
+
+        protected override void OnFormClosing(FormClosingEventArgs e)
+        {
+            if (!_isExiting && e.CloseReason == CloseReason.UserClosing)
+            {
+                e.Cancel = true;
+                this.Hide();
+                if (_config.ShowNotifications && _trayIcon != null)
+                {
+                    _trayIcon.ShowBalloonTip(2000, "Sonar Auto Switch", "البرنامج لا يزال يعمل في الخلفية بجانب الساعة.", ToolTipIcon.Info);
+                }
+                return;
+            }
+
+            _isRunning = false;
+            if (_trayIcon != null)
+            {
+                _trayIcon.Visible = false;
+                _trayIcon.Dispose();
+            }
+
+            base.OnFormClosing(e);
+        }
+
+        private void ExitApplication()
+        {
+            _isExiting = true;
+            _isRunning = false;
+            if (_trayIcon != null)
+            {
+                _trayIcon.Visible = false;
+                _trayIcon.Dispose();
+            }
+            Application.Exit();
         }
 
         private Button CreateButton(string text, Point loc, Size sz)
@@ -315,7 +633,6 @@ namespace SonarAutoSwitch
 
         private void SetWatermark(TextBox tb, string watermark)
         {
-            // Simple visual hint
             tb.Text = watermark;
             tb.ForeColor = TextMuted;
             tb.GotFocus += (s, e) =>
@@ -348,7 +665,6 @@ namespace SonarAutoSwitch
             _chkNotifications.Checked = _config.ShowNotifications;
             _chkAutoStart.Checked = _config.AutoStartWithWindows;
 
-            // Check Sonar Port status
             int port = SonarClient.GetSonarPort();
             if (port > 0)
             {
@@ -391,7 +707,6 @@ namespace SonarAutoSwitch
         {
             if (_comboActiveDevices.SelectedItem == null) return;
             string selected = _comboActiveDevices.SelectedItem.ToString();
-            // Extract the main name before parentheses if helpful, or use full
             string name = selected;
             int paren = selected.IndexOf(" (");
             if (paren > 0) name = selected.Substring(0, paren);
@@ -450,13 +765,8 @@ namespace SonarAutoSwitch
 
             _config.Save();
 
-            // Handle Startup shortcut
             ConfigureStartupShortcut(_config.AutoStartWithWindows);
-
-            if (_onConfigChanged != null)
-            {
-                _onConfigChanged();
-            }
+            _currentTargetId = null; // Forces immediate switch evaluation
 
             MessageBox.Show(
                 "تم حفظ الإعدادات بنجاح وتطبيقها على خدمة التحويل الفوري!",
@@ -464,20 +774,7 @@ namespace SonarAutoSwitch
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information);
 
-            this.Close();
-        }
-
-        public bool AllowRealExit { get; set; }
-
-        protected override void OnFormClosing(FormClosingEventArgs e)
-        {
-            if (!AllowRealExit && e.CloseReason == CloseReason.UserClosing)
-            {
-                e.Cancel = true;
-                this.Hide();
-                return;
-            }
-            base.OnFormClosing(e);
+            this.Hide();
         }
 
         private void ConfigureStartupShortcut(bool enable)
