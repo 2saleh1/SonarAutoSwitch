@@ -65,7 +65,8 @@ namespace SonarAutoSwitch
         protected override void OnShown(EventArgs e)
         {
             base.OnShown(e);
-            SonarClient.Log("SettingsForm OnShown - startSilent=" + _startSilent);
+            SonarClient.Log(string.Format("SettingsForm OnShown - startSilent={0}, Handle={1}, Visible={2}, WindowState={3}, Bounds={4}",
+                _startSilent, this.Handle, this.Visible, this.WindowState, this.Bounds));
             if (_startSilent)
             {
                 this.Hide();
@@ -74,6 +75,7 @@ namespace SonarAutoSwitch
             }
             else
             {
+                CenterOnPrimaryScreen();
                 this.WindowState = FormWindowState.Normal;
                 this.ShowInTaskbar = true;
                 this.BringToFront();
@@ -83,11 +85,26 @@ namespace SonarAutoSwitch
             }
         }
 
+        public void CenterOnPrimaryScreen()
+        {
+            try
+            {
+                var primary = Screen.PrimaryScreen.WorkingArea;
+                this.StartPosition = FormStartPosition.Manual;
+                this.Location = new Point(
+                    primary.Left + Math.Max(0, (primary.Width - this.Width) / 2),
+                    primary.Top + Math.Max(0, (primary.Height - this.Height) / 2)
+                );
+            }
+            catch { }
+        }
+
         private void InitializeComponents()
         {
             this.Text = "SonarAutoSwitch - Settings";
             this.Size = new Size(600, 720);
-            this.StartPosition = FormStartPosition.CenterScreen;
+            this.StartPosition = FormStartPosition.Manual;
+            CenterOnPrimaryScreen();
             this.FormBorderStyle = FormBorderStyle.FixedDialog;
             this.MaximizeBox = false;
             this.MinimizeBox = true;
@@ -486,6 +503,7 @@ namespace SonarAutoSwitch
 
             try
             {
+                CenterOnPrimaryScreen();
                 this.Opacity = 1;
                 this.ShowInTaskbar = true;
                 this.Visible = true;
