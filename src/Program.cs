@@ -24,10 +24,6 @@ namespace SonarAutoSwitch
         [STAThread]
         static void Main(string[] args)
         {
-            AppDomain.CurrentDomain.FirstChanceException += (s, e) =>
-            {
-                SonarClient.Log("FirstChance: " + e.Exception.GetType().Name + ": " + e.Exception.Message + " in " + e.Exception.Source);
-            };
             AppDomain.CurrentDomain.UnhandledException += (s, e) =>
             {
                 SonarClient.Log("Unhandled exception: " + e.ExceptionObject);
@@ -45,7 +41,7 @@ namespace SonarAutoSwitch
             {
                 if (!createdNew)
                 {
-                    // An instance is already running: signal it and grant foreground permission
+                    // An instance is already running: grant foreground permission and signal it to show settings
                     try
                     {
                         Process current = Process.GetCurrentProcess();
@@ -54,11 +50,6 @@ namespace SonarAutoSwitch
                             if (p.Id != current.Id)
                             {
                                 AllowSetForegroundWindow(p.Id);
-                                if (p.MainWindowHandle != IntPtr.Zero)
-                                {
-                                    ShowWindowAsync(p.MainWindowHandle, 9 /* SW_RESTORE */);
-                                    SetForegroundWindow(p.MainWindowHandle);
-                                }
                                 break;
                             }
                         }
@@ -95,9 +86,9 @@ namespace SonarAutoSwitch
 
                 bool silent = args.Length > 0 && args[0].ToLowerInvariant().Contains("silent");
                 SonarClient.Log(string.Format("Program Main - createdNew={0}, silent={1}", createdNew, silent));
-                var mainForm = new SettingsForm(config, silent);
-                SonarClient.Log("Program Main - Calling Application.Run");
-                Application.Run(mainForm);
+
+                var appContext = new SonarAppContext(config, silent);
+                Application.Run(appContext);
                 SonarClient.Log("Program Main - Application.Run ended");
             }
         }
