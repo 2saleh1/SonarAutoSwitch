@@ -357,10 +357,6 @@ namespace SonarAutoSwitch
             {
                 e.Cancel = true;
                 this.Hide();
-                if (_appContext != null)
-                {
-                    _appContext.ShowNotification("Sonar Auto Switch", "البرنامج لا يزال يعمل في الخلفية بجانب الساعة.", ToolTipIcon.Info);
-                }
                 return;
             }
 

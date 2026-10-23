@@ -18,7 +18,7 @@ namespace SonarAutoSwitch
         {
             PriorityDevices = new List<string> { "TOZO" };
             DefaultDevice = "HyperX";
-            ShowNotifications = true;
+            ShowNotifications = false;
             AutoStartWithWindows = true;
             Channels = new List<string> { "game", "chat", "media", "aux" };
             IncludeMonitoring = true;
@@ -50,7 +50,7 @@ namespace SonarAutoSwitch
                 var cfg = new AppConfig();
                 cfg.PriorityDevices = ParseStringList(json, "priorityDevices", new List<string> { "TOZO" });
                 cfg.DefaultDevice = ParseString(json, "defaultDevice", "HyperX");
-                cfg.ShowNotifications = ParseBool(json, "showNotifications", true);
+                cfg.ShowNotifications = ParseBool(json, "showNotifications", false);
                 cfg.AutoStartWithWindows = ParseBool(json, "autoStartWithWindows", true);
                 cfg.Channels = ParseStringList(json, "channels", new List<string> { "game", "chat", "media", "aux" });
                 cfg.IncludeMonitoring = ParseBool(json, "includeMonitoring", true);
